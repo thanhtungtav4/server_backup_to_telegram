@@ -21,13 +21,13 @@ mkdir -p "$BACKUP_DIR"
 
 # Logging function
 log() {
-    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     echo "[$timestamp] $1" | tee -a "$LOG_FILE"
 }
 
 # Telegram notification functions
 send_telegram_msg() {
-    local message="$1"
+    message="$1"
     curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         -d "chat_id=$CHAT_ID" \
         -d "text=$message" \
@@ -35,18 +35,18 @@ send_telegram_msg() {
 }
 
 send_telegram_file() {
-    local file_path="$1"
-    local caption="$2"
-    local base_name=$(basename "$file_path")
-    local temp_dir=$(dirname "$file_path")
-    local split_prefix="${temp_dir}/${base_name}_part_"
+    file_path="$1"
+    caption="$2"
+    base_name=$(basename "$file_path")
+    temp_dir=$(dirname "$file_path")
+    split_prefix="${temp_dir}/${base_name}_part_"
     
     # Split file into chunks
     split -b "$CHUNK_SIZE" "$file_path" "$split_prefix"
     
     # Send each chunk
     for part in "${split_prefix}"*; do
-        local part_name=$(basename "$part")
+        part_name=$(basename "$part")
         log "Sending backup part: $part_name"
         curl --progress-bar -F "chat_id=$CHAT_ID" \
             -F "document=@$part" \
