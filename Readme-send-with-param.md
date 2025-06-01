@@ -29,10 +29,11 @@ This script automates the backup process for a WordPress site, including databas
 
 Install dependencies:
 ```bash
+
 sudo apt-get update
 sudo apt-get install curl jq tar -y
 
-
+bash```
 3. Telegram Setup
 Create a bot via BotFather
 
