@@ -1,257 +1,235 @@
-# Backup Script for WordPress with Telegram Notifications
+# WordPress Backup Script with Telegram Notifications
 
-This script automates the backup process for a WordPress site, including database and theme files. It compresses the backups and sends them to Telegram using a Cloudflare Worker proxy for API requests.
+![Backup Automation](https://img.shields.io/badge/Backup-Automated-success)
+![Telegram Integration](https://img.shields.io/badge/Telegram-Integrated-blue)
+![Cloudflare Proxy](https://img.shields.io/badge/Cloudflare-Proxy-orange)
 
----
+Automated backup solution for WordPress sites that compresses database and theme files, then sends them to Telegram via Cloudflare Worker proxy.
 
 ## Features
 
-- Automated backup for WordPress database and theme files
-- Compresses backups for efficient storage
-- Sends backup files to Telegram via a proxy to bypass restrictions
-- Logs all operations for monitoring and debugging
-- Splits large files to comply with Telegram's 50MB file limit
-- Sends start/completion notifications with detailed metadata
-
----
+- 🗄️ Database backup with mysqldump
+- 🎨 Theme files compression
+- ✈️ Telegram notifications with progress updates
+- 🔄 Cloudflare Worker proxy support
+- 📁 File splitting for large backups
+- 📝 Detailed logging
+- ⏱️ Backup duration tracking
+- 🔒 Parameterized execution
 
 ## Requirements
 
-### 1. Server Environment
-- Linux-based server (Ubuntu/CentOS recommended)
+### Server Environment
+- Linux server (Ubuntu/CentOS recommended)
 - Bash shell
+- MySQL/MariaDB
+- WordPress installation
 
-### 2. Required Tools
-- `curl`: For sending requests to Telegram
-- `jq`: For parsing JSON responses
-- `tar`: For file compression
-- `split`: To handle Telegram's file size limits
+### Tools
+- `curl`
+- `jq`
+- `tar`
+- `split`
+- `mysqldump`
 
-Install dependencies:
+### Install dependencies:
+```bash
+sudo apt-get update && sudo apt-get install curl jq tar -y
+```
+### Telegram Setup
 
-sudo apt-get update
-sudo apt-get install curl jq tar -y
+Create bot with @BotFather
 
-3. Telegram Setup
-Create a bot via BotFather
+Note your BOT_TOKEN
 
-Get your BOT_TOKEN from BotFather
+Get CHAT_ID using @userinfobot
 
-Get your CHAT_ID using @userinfobot or group management bots
+Cloudflare Worker
+Deploy proxy from:
 
-4. Cloudflare Worker Proxy
-Deploy the cf-worker-telegram to bypass API restrictions:
-
-Create Cloudflare account
-
-Create new Worker
-
-Copy worker code
-
-Deploy worker and note the generated URL
-
-Installation
-1. Download the Script
-bash
+```bash
+https://github.com/tuanpb99/cf-worker-telegram
+```
+# Download script
 wget https://raw.githubusercontent.com/thanhtungtav4/server_backup_to_telegram/main/backup-with-param.sh
-2. Make It Executable
-bash
-chmod +x backup-with-param.sh
-3. Create Backup Directory
-bash
-sudo mkdir -p /root/backups
-Configuration
-Edit the script with your credentials:
 
-bash
+# Make executable
+chmod +x backup-with-param.sh
+
+# Create backup directory
+```bash
+sudo mkdir -p /root/backups
+```
+Configuration
+Edit script with your credentials:
+
+```bash
 nano backup-with-param.sh
+```
 Update these values:
 
-bash
-# Telegram API Configuration
-BOT_TOKEN="your_bot_token_here"
-CHAT_ID="your_chat_id_here"
+```bash
+BOT_TOKEN="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+CHAT_ID="-1001234567890"
 PROXY_URL="https://your-worker-name.workers.dev"
-
-# Backup Configuration
-BACKUP_DIR="/root/backups"        # Change if needed
+BACKUP_DIR="/root/backups"
 LOG_FILE="/root/wo_auto_backup.log"
-CHUNK_SIZE=49M                    # 49MB chunks for Telegram
-Usage
-Run the script with required parameters:
+```
+### Usage
+Basic Command
+```bash
+./backup-with-param.sh  "My Site Name" database_name db_user db_password /var/www/example.com/htdocs
+```
 
-bash
-./backup-with-param.sh <SITE_NAME> <DB_NAME> <DB_USER> <DB_PASS> <WEB_ROOT>
-Parameters
+### Parameters
 Parameter	Description	Example
-SITE_NAME	Website identifier	my_blog
+SITE_NAME	Website identifier	My Blog
 DB_NAME	WordPress database name	wp_db
 DB_USER	Database username	wp_admin
-DB_PASS	Database password	secure_password123
-WEB_ROOT	WordPress installation path	/var/www/example.com/htdocs
-Example Command
-bash
-./backup-with-param.sh \
-    "My Dental Clinic" \
-    dental_wpdb \
-    dental_admin \
-    P@ssw0rd!2024 \
-    /var/www/nhakhoaident.com/htdocs
-Script Workflow
-Initialization:
-
-Creates backup directory if missing
-
-Starts logging with timestamp
-
-Sends Telegram start notification
-
-Database Backup:
-
-Diagram
-Code
-
-
-
-
-
-Theme Backup:
-
-Diagram
-Code
-
-
-
-
-Completion:
-
-Calculates backup duration
-
-Sends success notification
-
-Cleans up temporary files
-
-Updates log file
-
-Log File
-Script logs all operations to:
-
-/root/wo_auto_backup.log
-View logs with:
-
-bash
-tail -f /root/wo_auto_backup.log
-Sample log output:
-
+DB_PASS	Database password	P@ssw0rd!
+WEB_ROOT	WordPress root path	/var/www/site.com/htdocs
+### Sample Output
+```text
 [2025-06-01 10:30:45] 🚀 Initiating backup for: My Dental Clinic
 [2025-06-01 10:31:02] 🔍 Creating database backup...
-[2025-06-01 10:31:15] Sending backup part: dental_clinic_db_20250601-103045.tar.gz_part_aa
+[2025-06-01 10:31:15] Sending backup part: dental_db_20250601-103045.tar.gz_part_aa
 [2025-06-01 10:32:30] 🎨 Backing up theme files...
 [2025-06-01 10:33:45] ✅ Backup completed successfully in 3m 0s!
-Error Handling
-Common Issues & Solutions
-Database Connection Failed:
-
-log
-mysqldump: Got error: 1045: Access denied for user...
-Verify DB credentials
-
-Check MySQL user privileges
-
-Test connection manually:
-
-bash
-mysql -u [user] -p[password] -e "SHOW DATABASES;"
-File Permission Errors:
-
-log
-tar: wp-content/themes: Cannot open: Permission denied
-Ensure script has read access:
-
-bash
-sudo chmod -R 755 /var/www
-Telegram API Errors:
-
-log
-{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}
-Verify CHAT_ID is correct
-
-Check bot was added to the group/channel
-
-Test proxy connectivity:
-
-bash
-curl -I $PROXY_URL
-File Size Too Large:
-
-log
-Request Entity Too Large
-Reduce CHUNK_SIZE to 45M if needed
-
-Verify split command is working
-
-Advanced Customization
-1. Adjust File Size Limit
-Modify chunk size in the script:
-
-bash
-CHUNK_SIZE=45M  # For stricter networks
-2. Include Additional Directories
-Add more directories to backup by modifying the theme backup section:
-
-bash
-# Backup both themes and plugins
-tar -czf "$THEME_ARCHIVE" -C "$WEB_ROOT/wp-content" themes/ plugins/
-3. Cron Job Automation
-Schedule daily backups at 2 AM:
-
-bash
-crontab -e
-Add:
-
-bash
-0 2 * * * /path/to/backup-with-param.sh \
-    "My Site" \
-    db_name \
-    db_user \
-    db_pass \
-    /var/www/mysite.com/htdocs
-4. Retention Policy
-Add this to the end of the script to keep backups for 7 days:
-
-bash
-# Cleanup old backups
-find "$BACKUP_DIR" -name "${SITE_NAME}_*" -mtime +7 -exec rm {} \;
-5. Email Notifications
-Add email alerts on failure (requires mailutils):
-
-bash
-if [ $? -ne 0 ]; then
-    echo "Backup failed for $SITE_NAME" | mail -s "Backup Failure" admin@example.com
-fi
-License
-This project is licensed under the MIT License.
-
-Support
-For assistance, please open an issue on GitHub:
-
-Script Repository
-
-Proxy Worker Repository
-
-Sample Telegram Notifications
-Start Notification:
+```
+### Telegram Notifications
+```text
+Start Notification
 🔄 Backup Initiated
 • Website: My Dental Clinic
-• Server: server1
+• Server: server1.example.com
 • Timestamp: 2025-06-01 10:30:45
 
-Database Backup:
-💾 Database Backup - My Dental Clinic (Part 1/3)
+File Transfer
+📤 Sending database backup (Part 1/3)
+📤 Sending theme files (Part 1/2)
 
-Completion Notification:
+Completion Alert
 ✅ Backup Completed Successfully!
 • Website: My Dental Clinic
 • Components: Database + Theme Files
 • Duration: 3m 15s
-All backup files have been transferred to Telegram.
+```
+
+### Automation with Cron
+Schedule daily backups at 2 AM:
+
+```bash
+crontab -e
+```
+Add:
+
+```bash
+0 2 * * * /root/backup-with-param.sh \
+    "My Site" \
+    wp_db \
+    wp_admin \
+    "secure_password" \
+    /var/www/mysite.com/htdocs
+```
+### Error Handling
+Common issues and solutions:
+
+Database Connection Failed:
+
+```log
+mysqldump: Got error: 1045: Access denied...
+Verify MySQL credentials
+
+Check user privileges
+
+File Permission Errors:
+```
+```log
+tar: themes: Cannot open: Permission denied
+Adjust permissions: chmod -R 755 /var/www
+
+Telegram API Errors:
+```
+```log
+{"ok":false,"error_code":400,"description":"Bad Request"}
+Verify BOT_TOKEN and CHAT_ID
+
+Check proxy connectivity
+
+File Size Too Large:
+```
+```log
+Request Entity Too Large
+Reduce CHUNK_SIZE in script (default: 49M)
+
+Advanced Configuration
+Include Plugins Directory
+Modify theme backup section:
+```
+```bash
+tar -czf "$THEME_ARCHIVE" -C "$WEB_ROOT/wp-content" themes/ plugins/
+```
+
+### Backup Retention Policy
+Add to end of script:
+
+```bash
+# Keep backups for 7 days
+find "$BACKUP_DIR" -name "${SITE_NAME}_*" -mtime +7 -exec rm {} \;
+Email Notifications
+Add after error checks (requires mailutils):
+```
+
+```bash
+echo "Backup failed for $SITE_NAME" | mail -s "Backup Failure" admin@example.com
+License
+MIT License
+
+Support
+Script Issues
+
+Proxy Worker
+```
+
+### Key features of this documentation:
+```text
+1. **Clear Structure**:
+   - Organized sections with emoji headers
+   - Requirements checklist
+   - Step-by-step installation
+   - Parameter reference table
+
+2. **Visual Elements**:
+   - Status badges for key features
+   - Sample command/output blocks
+   - Notification previews
+
+3. **Troubleshooting Guide**:
+   - Common errors with solutions
+   - Permission fixes
+   - API error resolution
+
+4. **Automation Instructions**:
+   - Cron job setup
+   - Retention policy example
+   - Email notification integration
+
+5. **Advanced Configuration**:
+   - Plugin backup instructions
+   - Custom retention periods
+   - Size limit adjustments
+
+6. **Support Resources**:
+   - License information
+   - GitHub issue links
+   - Related project references
+
+The document uses:
+- Clear section headers
+- Code blocks for commands/configs
+- Tables for parameter documentation
+- Emoji visual cues
+- Error handling scenarios
+- Concise instructions
+- External links for reference
+```
