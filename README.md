@@ -1,5 +1,3 @@
-# server_backup_to_telegram
-
 # WordPress Backup Automation Script
 
 ![Shell Script](https://img.shields.io/badge/shell_script-%23121011.svg?style=for-the-badge&logo=gnu-bash&logoColor=white)
@@ -50,3 +48,6 @@ WEB_ROOT="/path/to/wordpress"
 # Backup Settings
 BACKUP_DIR="/path/to/backups"
 LOG_FILE="/path/to/backup.log"
+
+
+https://nttung.dev/
