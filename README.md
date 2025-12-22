@@ -49,5 +49,5 @@ WEB_ROOT="/path/to/wordpress"
 BACKUP_DIR="/path/to/backups"
 LOG_FILE="/path/to/backup.log"
 
-
+Deail post : https://nttung.dev/backup-du-lieu-voi-telegram-cho-server-website/
 https://nttung.dev/
