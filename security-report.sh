@@ -167,7 +167,7 @@ TEMP_SSH="${TEMP_DIR}/sec_ssh_$$.tmp"
 cleanup() {
     rm -f "$CHART_FILE" "$TEMP_ACCESS" "$TEMP_SSH"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 log_msg() {
     local timestamp
@@ -594,7 +594,7 @@ fi
 FORMATTED_ERRORS=""
 if [ -n "$CRITICAL_ERRORS" ]; then
     FORMATTED_ERRORS=$(echo "$CRITICAL_ERRORS" | while read -r err_line; do
-        safe_err=$(escape_html "$err_line")
+        safe_err=$(escape_html "$err_line" | cut -c 1-150)
         printf '• <code>%s</code>\n' "$safe_err"
     done)
 fi

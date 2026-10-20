@@ -1,17 +1,26 @@
 #!/bin/bash
 
+# Auto-load configuration from backup.env if present
+for cfg in "/root/backup.env" "$(dirname "$0")/backup.env" "$(dirname "$0")/security-report.conf"; do
+    if [ -r "$cfg" ]; then
+        # shellcheck disable=SC1090
+        source "$cfg"
+        break
+    fi
+done
+
 # Telegram API Configuration
-BOT_TOKEN=""
-CHAT_ID=""
+BOT_TOKEN="${BOT_TOKEN:-""}"
+CHAT_ID="${CHAT_ID:-""}"
 # Backup Configuration
-BACKUP_DIR="/root/backups"
-LOG_FILE="/root/wo_auto_backup.log"
-SITE_NAME=""
-DB_NAME=""
-DB_USER=""
-DB_PASS=""
-WEB_ROOT="/var/www/nhakhoaident.com/htdocs"
-CHUNK_SIZE=49M  # Telegram file limit with safety margin
+BACKUP_DIR="${BACKUP_DIR:-"/root/backups"}"
+LOG_FILE="${LOG_FILE:-"/root/wo_auto_backup.log"}"
+SITE_NAME="${SITE_NAME:-""}"
+DB_NAME="${DB_NAME:-""}"
+DB_USER="${DB_USER:-""}"
+DB_PASS="${DB_PASS:-""}"
+WEB_ROOT="${WEB_ROOT:-"/var/www/nhakhoaident.com/htdocs"}"
+CHUNK_SIZE="${CHUNK_SIZE:-49M}"  # Telegram file limit with safety margin
 
 # Track start time
 START_TIME=$(date +%s)
