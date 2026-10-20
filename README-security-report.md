@@ -113,39 +113,61 @@ NGINX_ACCESS_LOG="/var/log/nginx/access.log"
 NGINX_ERROR_LOG="/var/log/nginx/error.log"
 ```
 
-### 3. Chạy thử nghiệm thủ công
+### 3. Tùy Chọn Chu Kỳ Báo Cáo (1 Ngày, 7 Ngày, 30 Ngày)
+Script hỗ trợ phân tích và tổng hợp dữ liệu theo các mốc thời gian khác nhau:
+- **Hàng ngày (1 ngày):** `--daily` hoặc `-p 1` (Mặc định).
+- **Hàng tuần (7 ngày):** `--weekly` hoặc `-p 7`. Tự động gộp log hiện tại và log xoay vòng nén `.gz` trong tuần.
+- **Hàng tháng (30 ngày):** `--monthly` hoặc `-p 30`. Tổng quan bức tranh an ninh cả tháng.
+
 ```bash
-./security-report.sh
-```
-Hoặc truyền tham số trực tiếp mà không cần sửa file:
-```bash
-./security-report.sh "My Website" "/var/log/nginx/mywebsite.com.access.log"
+# Xem trước báo cáo 1 ngày trên terminal:
+./security-report.sh --daily --dry-run
+
+# Xem trước báo cáo tuần (7 ngày):
+./security-report.sh --weekly --dry-run
+
+# Gửi báo cáo tháng (30 ngày) tới Telegram:
+./security-report.sh --monthly
 ```
 
-Hoặc qua biến môi trường:
+### 4. Tự Động Dọn Dẹp Log Cũ (> 60 Ngày / 2 Tháng)
+Để tránh tình trạng log nén của Nginx, auth log hoặc file backup cũ làm **đầy ổ cứng VPS**, script tự động quét và dọn dẹp các file cũ hơn **60 ngày** trước mỗi lần tạo báo cáo:
+- Tự động xóa file `access.log.*.gz`, `error.log.*.gz` cũ hơn 60 ngày.
+- Tự động xóa các file backup nén `.tar.gz` cũ hơn 60 ngày trong thư mục `/root/backups`.
+- Tự động thu gọn file `security_report.log` nếu vượt quá 10MB (giữ 5.000 dòng gần nhất).
+- Dọn dẹp nhật ký `journalctl` hệ thống (`--vacuum-time=60d`).
+
 ```bash
-BOT_TOKEN="xxx" CHAT_ID="yyy" ./security-report.sh "My Website"
+# Chạy dọn dẹp log thủ công mà không gửi báo cáo:
+./security-report.sh --clean
+
+# Tùy chỉnh số ngày lưu trữ (ví dụ 30 ngày thay vì 60 ngày):
+./security-report.sh --clean-days 30 --clean
+
+# Tắt dọn dẹp tự động nếu muốn lưu log vĩnh viễn:
+./security-report.sh --no-clean
 ```
 
 ---
 
 ## ⏰ Thiết Lập Tự Động Hóa Với Cronjob
 
-Để nhận báo cáo tổng kết đều đặn mỗi ngày (ví dụ 08:00 sáng):
+Bạn có thể lên lịch để nhận báo cáo định kỳ:
 
 ```bash
 crontab -e
 ```
 
-Thêm dòng sau vào cuối file crontab:
+Thêm các dòng sau vào crontab:
 ```bash
-# Gửi báo cáo an ninh & sự cố hàng ngày lúc 08:00 AM
-0 8 * * * /root/security-report.sh >> /root/security_report.log 2>&1
-```
+# 1. Báo cáo hàng ngày (24h) lúc 08:00 AM:
+0 8 * * * /root/security-report.sh --daily >> /root/security_report.log 2>&1
 
-Nếu muốn theo dõi mỗi 6 tiếng một lần:
-```bash
-0 */6 * * * /root/security-report.sh >> /root/security_report.log 2>&1
+# 2. Báo cáo tổng kết tuần (7 ngày) vào mỗi sáng thứ Hai lúc 08:30 AM:
+30 8 * * 1 /root/security-report.sh --weekly >> /root/security_report.log 2>&1
+
+# 3. Báo cáo tổng kết tháng (30 ngày) vào ngày 1 hàng tháng lúc 09:00 AM:
+0 9 1 * * /root/security-report.sh --monthly >> /root/security_report.log 2>&1
 ```
 
 ---

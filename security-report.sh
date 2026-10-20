@@ -5,6 +5,7 @@
 # ==============================================================================
 # Script tự động phân tích log hệ thống (Nginx, SSH, Fail2ban), tài nguyên
 # máy chủ, vẽ biểu đồ qua QuickChart API và gửi báo cáo an ninh về Telegram.
+# Hỗ trợ báo cáo theo chu kỳ (1 ngày, 7 ngày, 30 ngày) và tự động dọn log cũ (>60 ngày).
 # ==============================================================================
 
 # -------------------------- 1. ĐỌC CẤU HÌNH NGOÀI -----------------------------
@@ -35,7 +36,15 @@ TELEGRAM_API="${TELEGRAM_API:-${TELEGRAM_API_BASE:-"https://api.telegram.org"}}"
 # 2. Tên máy chủ / Website nhận diện
 SITE_NAME="${SITE_NAME:-"$(hostname)"}"
 
-# 3. Đường dẫn các file log
+# 3. Chu kỳ báo cáo: 1 (hàng ngày), 7 (hàng tuần), 30 (hàng tháng)
+PERIOD="${PERIOD:-1}"
+
+# 4. Tự động dọn dẹp log và file backup cũ để tránh đầy ổ cứng (mặc định: 60 ngày = 2 tháng)
+AUTO_CLEAN="${AUTO_CLEAN:-1}"
+CLEAN_DAYS="${CLEAN_DAYS:-60}"
+BACKUP_DIR="${BACKUP_DIR:-"/root/backups"}"
+
+# 5. Đường dẫn các file log
 NGINX_ACCESS_LOG="${NGINX_ACCESS_LOG:-"/var/log/nginx/access.log"}"
 NGINX_ERROR_LOG="${NGINX_ERROR_LOG:-"/var/log/nginx/error.log"}"
 AUTH_LOG="${AUTH_LOG:-""}"          # Để trống sẽ tự động phát hiện (/var/log/auth.log, /var/log/secure, hoặc journalctl)
@@ -51,21 +60,38 @@ fi
 # Chế độ chạy
 DRY_RUN=0
 QUIET=0
+ONLY_CLEAN=0
 
 # -------------------------- 3. XỬ LÝ THAM SỐ DÒNG LỆNH -------------------------
 print_help() {
     cat <<EOF
 Cách dùng: $0 [TÙY CHỌN] [SITE_NAME] [NGINX_ACCESS_LOG] [NGINX_ERROR_LOG]
 
-TÙY CHỌN:
-  --test, --dry-run   Chạy phân tích và in kết quả ra terminal, KHÔNG gửi tới Telegram
-  --quiet, -q         Chạy im lặng, chỉ ghi log file (thích hợp cho Cronjob)
-  --help, -h          Hiển thị hướng dẫn này
+TÙY CHỌN CHU KỲ BÁO CÁO:
+  -p, --period <days>   Chọn chu kỳ: 1 (ngày), 7 (tuần) hoặc 30 (tháng) [Mặc định: 1]
+  --daily               Báo cáo 1 ngày (24 giờ qua) [Tương đương -p 1]
+  --weekly              Báo cáo 7 ngày (1 tuần qua) [Tương đương -p 7]
+  --monthly             Báo cáo 30 ngày (1 tháng qua) [Tương đương -p 30]
 
-VÍ DỤ:
-  $0 --test
-  $0 "My Site" /var/log/nginx/site.access.log
-  $0 --dry-run "My Site" /var/log/nginx/access.log /var/log/nginx/error.log
+TÙY CHỌN BẢO TRÌ & DỌN DẸP LOG:
+  --clean               Chỉ chạy dọn dẹp log/backup cũ hơn $CLEAN_DAYS ngày rồi thoát
+  --clean-days <days>   Thiết lập số ngày lưu log tối đa [Mặc định: 60 ngày]
+  --no-clean            Tắt tính năng tự động dọn log cũ
+
+TÙY CHỌN KHÁC:
+  --test, --dry-run     Chạy phân tích và in kết quả ra terminal, KHÔNG gửi tới Telegram
+  --quiet, -q           Chạy im lặng, chỉ ghi log file (thích hợp cho Cronjob)
+  --help, -h            Hiển thị hướng dẫn này
+
+VÍ DỤ CRONJOB:
+  # Báo cáo hàng ngày lúc 08:00 AM:
+  0 8 * * * $0 >> $REPORT_LOG 2>&1
+
+  # Báo cáo 7 ngày vào thứ Hai lúc 08:00 AM:
+  0 8 * * 1 $0 --weekly >> $REPORT_LOG 2>&1
+
+  # Báo cáo 30 ngày vào ngày 1 hàng tháng lúc 08:00 AM:
+  0 8 1 * * $0 --monthly >> $REPORT_LOG 2>&1
 EOF
     exit 0
 }
@@ -73,6 +99,34 @@ EOF
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --daily)
+            PERIOD=1
+            shift
+            ;;
+        --weekly)
+            PERIOD=7
+            shift
+            ;;
+        --monthly)
+            PERIOD=30
+            shift
+            ;;
+        -p|--period)
+            PERIOD="$2"
+            shift 2
+            ;;
+        --clean)
+            ONLY_CLEAN=1
+            shift
+            ;;
+        --no-clean)
+            AUTO_CLEAN=0
+            shift
+            ;;
+        --clean-days)
+            CLEAN_DAYS="$2"
+            shift 2
+            ;;
         --dry-run|--test)
             DRY_RUN=1
             shift
@@ -99,6 +153,11 @@ done
 [ "${#POSITIONAL_ARGS[@]}" -ge 2 ] && NGINX_ACCESS_LOG="${POSITIONAL_ARGS[1]}"
 [ "${#POSITIONAL_ARGS[@]}" -ge 3 ] && NGINX_ERROR_LOG="${POSITIONAL_ARGS[2]}"
 
+# Đảm bảo PERIOD hợp lệ
+if ! [[ "$PERIOD" =~ ^[0-9]+$ ]] || [ "$PERIOD" -le 0 ]; then
+    PERIOD=1
+fi
+
 # -------------------------- 4. HÀM BỔ TRỢ & BẢO MẬT --------------------------
 TEMP_DIR="/tmp"
 CHART_FILE="${TEMP_DIR}/sec_chart_$$.png"
@@ -124,22 +183,128 @@ escape_html() {
     printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
 }
 
-# Kiểm tra cấu hình bắt buộc (bỏ qua nếu chạy dry-run)
+# Hàm tính toán ngày quá khứ tương thích cả Linux (GNU date) và macOS (BSD date)
+get_past_date() {
+    local days="$1"
+    local fmt="$2"
+    local res
+    res=$(date -d "$days days ago" +"$fmt" 2>/dev/null)
+    if [ -n "$res" ]; then
+        echo "$res"
+    else
+        date -v-"${days}"d +"$fmt" 2>/dev/null
+    fi
+}
+
+# Tạo biểu thức regex cho chu kỳ ngày
+build_date_regex() {
+    local days="$1"
+    local fmt="$2"
+    local regex=""
+    for ((i=0; i<days; i++)); do
+        local d
+        d=$(get_past_date "$i" "$fmt")
+        if [ -n "$d" ]; then
+            if [ -z "$regex" ]; then
+                regex="$d"
+            else
+                regex="$regex|$d"
+            fi
+        fi
+    done
+    echo "($regex)"
+}
+
+# -------------------------- 5. TỰ ĐỘNG DỌN DẸP LOG CŨ (> 60 NGÀY) -------------
+CLEANED_COUNT=0
+clean_old_logs() {
+    log_msg "🧹 Đang kiểm tra và dọn dẹp các file log/backup cũ hơn $CLEAN_DAYS ngày (2 tháng)..."
+    local count=0
+
+    # 1. Dọn các file log nén cũ của Nginx (*.gz, *.1, *.old)
+    local nginx_dir
+    nginx_dir="$(dirname "$NGINX_ACCESS_LOG")"
+    if [ -d "$nginx_dir" ] && [ -w "$nginx_dir" ]; then
+        local c1
+        c1=$(find "$nginx_dir" -type f \( -name "*.gz" -o -name "*.1" -o -name "*.old" \) -mtime +"$CLEAN_DAYS" -print -delete 2>/dev/null | wc -l | tr -d ' ')
+        count=$((count + c1))
+    fi
+
+    # 2. Dọn các file log xoay vòng trong /var/log (*.gz, *.old)
+    if [ -d "/var/log" ] && [ -w "/var/log" ]; then
+        local c2
+        c2=$(find /var/log -maxdepth 2 -type f \( -name "*.gz" -o -name "*.old" \) -mtime +"$CLEAN_DAYS" -print -delete 2>/dev/null | wc -l | tr -d ' ')
+        count=$((count + c2))
+    fi
+
+    # 3. Dọn file backup cũ trong BACKUP_DIR nếu tồn tại
+    if [ -d "$BACKUP_DIR" ] && [ -w "$BACKUP_DIR" ]; then
+        local c3
+        c3=$(find "$BACKUP_DIR" -type f \( -name "*.tar.gz" -o -name "*.sql" \) -mtime +"$CLEAN_DAYS" -print -delete 2>/dev/null | wc -l | tr -d ' ')
+        count=$((count + c3))
+    fi
+
+    # 4. Thu gọn file log của script nếu lớn hơn 10MB
+    if [ -f "$REPORT_LOG" ]; then
+        local size_kb
+        size_kb=$(du -k "$REPORT_LOG" 2>/dev/null | awk '{print $1}')
+        if [ "${size_kb:-0}" -gt 10240 ]; then
+            tail -n 5000 "$REPORT_LOG" > "${REPORT_LOG}.tmp" && mv "${REPORT_LOG}.tmp" "$REPORT_LOG"
+            log_msg "🧹 Đã thu gọn file $REPORT_LOG (giữ 5.000 dòng gần nhất)."
+        fi
+    fi
+
+    # 5. Dọn dẹp systemd journal nếu có
+    if command -v journalctl >/dev/null 2>&1; then
+        journalctl --vacuum-time="${CLEAN_DAYS}d" >/dev/null 2>&1 || true
+    fi
+
+    CLEANED_COUNT="$count"
+    if [ "$count" -gt 0 ]; then
+        log_msg "✅ Đã dọn dẹp thành công $count file log và backup cũ hơn $CLEAN_DAYS ngày."
+    else
+        log_msg "✔️ Hệ thống sạch sẽ, không có file log nào cũ hơn $CLEAN_DAYS ngày."
+    fi
+}
+
+# Nếu chỉ chạy dọn dẹp log:
+if [ "$ONLY_CLEAN" -eq 1 ]; then
+    clean_old_logs
+    exit 0
+fi
+
+# Chạy tự động dọn log nếu bật AUTO_CLEAN
+if [ "$AUTO_CLEAN" -eq 1 ]; then
+    clean_old_logs
+fi
+
+# -------------------------- 6. KIỂM TRA CẤU HÌNH BẮT BUỘC --------------------
 if [ "$DRY_RUN" -eq 0 ]; then
     if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
         echo "❌ Lỗi: BOT_TOKEN hoặc CHAT_ID chưa được thiết lập!"
-        echo "Cách dùng:"
-        echo "  1. Mở file script và điền: BOT_TOKEN=\"...\" CHAT_ID=\"...\""
-        echo "  2. Hoặc tạo file backup.env trong cùng thư mục / /root/backup.env"
-        echo "  3. Hoặc chạy qua biến môi trường: BOT_TOKEN=\"...\" CHAT_ID=\"...\" $0 [SITE_NAME] [NGINX_ACCESS_LOG]"
+        echo "👉 Bạn hãy tạo file 'backup.env' hoặc 'security-report.conf' hoặc thiết lập biến môi trường."
         exit 1
     fi
 fi
 
-log_msg "🔍 Bắt đầu phân tích an ninh cho máy chủ: $SITE_NAME"
+# Xác định nhãn chu kỳ báo cáo
+if [ "$PERIOD" -eq 1 ]; then
+    PERIOD_LABEL="1 NGÀY (24H)"
+    PERIOD_TITLE_DESC="24h qua"
+elif [ "$PERIOD" -eq 7 ]; then
+    PERIOD_LABEL="7 NGÀY (1 TUẦN)"
+    PERIOD_TITLE_DESC="7 ngày qua"
+elif [ "$PERIOD" -eq 30 ]; then
+    PERIOD_LABEL="30 NGÀY (1 THÁNG)"
+    PERIOD_TITLE_DESC="30 ngày qua"
+else
+    PERIOD_LABEL="$PERIOD NGÀY"
+    PERIOD_TITLE_DESC="$PERIOD ngày qua"
+fi
 
-# -------------------------- 5. TỰ ĐỘNG TÌM FILE LOG ---------------------------
-# Nếu file Nginx access log không tồn tại theo đường dẫn mặc định, thử tìm theo SITE_NAME
+log_msg "🔍 Bắt đầu phân tích an ninh cho máy chủ: $SITE_NAME (Chu kỳ: $PERIOD_LABEL)"
+
+# -------------------------- 7. TỰ ĐỘNG TÌM FILE LOG ---------------------------
 if [ ! -f "$NGINX_ACCESS_LOG" ]; then
     if [ -f "/var/log/nginx/${SITE_NAME}.access.log" ]; then
         NGINX_ACCESS_LOG="/var/log/nginx/${SITE_NAME}.access.log"
@@ -156,7 +321,6 @@ if [ ! -f "$NGINX_ERROR_LOG" ]; then
     fi
 fi
 
-# Tự động phát hiện log SSH (Ubuntu/Debian vs CentOS/RHEL vs Systemd Journal)
 SSH_MODE="file"
 if [ -z "$AUTH_LOG" ]; then
     if [ -f "/var/log/auth.log" ]; then
@@ -168,14 +332,14 @@ if [ -z "$AUTH_LOG" ]; then
     fi
 fi
 
-# -------------------------- 6. TÀI NGUYÊN MÁY CHỦ -----------------------------
+# -------------------------- 8. TÀI NGUYÊN MÁY CHỦ -----------------------------
 REPORT_TIME=$(date +"%Y-%m-%d %H:%M:%S")
 
-# Disk Usage (Root partition)
+# Dung lượng ổ cứng Root
 DISK_INFO=$(df -h / 2>/dev/null | awk 'NR==2 {print $5 " (" $3 "/" $2 ")"}')
 DISK_INFO="${DISK_INFO:-"N/A"}"
 
-# Memory Usage
+# Dung lượng RAM
 if command -v free >/dev/null 2>&1; then
     RAM_INFO=$(free -m 2>/dev/null | awk 'NR==2 {printf "%.0f%% (%dMB/%dMB)", ($3/$2)*100, $3, $2}')
 else
@@ -186,8 +350,7 @@ fi
 CPU_LOAD=$(uptime 2>/dev/null | awk -F'load average:' '{print $2}' | sed 's/^ //')
 CPU_LOAD="${CPU_LOAD:-"N/A"}"
 
-# -------------------------- 7. PHÂN TÍCH NGINX ACCESS LOG ----------------------
-TODAY_NGINX=$(date +"%d/%b/%Y")
+# -------------------------- 9. PHÂN TÍCH NGINX ACCESS LOG ----------------------
 TOTAL_REQ=0
 COUNT_2XX=0
 COUNT_3XX=0
@@ -198,16 +361,23 @@ TOP_PATHS=""
 TOP_OFFENDING_IPS=""
 
 if [ -f "$NGINX_ACCESS_LOG" ]; then
-    # TỐI ƯU HIỆU NĂNG: Lọc một lần duy nhất qua tail và lưu vào file tạm trong /tmp
-    # Giảm 90% tải đĩa và chạy trong chớp mắt ngay cả khi access.log có kích thước hàng GB
-    tail -n 100000 "$NGINX_ACCESS_LOG" 2>/dev/null | grep "$TODAY_NGINX" > "$TEMP_ACCESS" 2>/dev/null
-
-    # Nếu hôm nay có ít hơn 50 dòng (ví dụ vừa sang ngày mới), lấy 25.000 dòng gần nhất
-    if [ "$(wc -l < "$TEMP_ACCESS" 2>/dev/null || echo 0)" -lt 50 ]; then
-        tail -n 25000 "$NGINX_ACCESS_LOG" > "$TEMP_ACCESS" 2>/dev/null
+    if [ "$PERIOD" -eq 1 ]; then
+        TODAY_NGINX=$(date +"%d/%b/%Y")
+        tail -n 100000 "$NGINX_ACCESS_LOG" 2>/dev/null | grep "$TODAY_NGINX" > "$TEMP_ACCESS" 2>/dev/null
+        if [ "$(wc -l < "$TEMP_ACCESS" 2>/dev/null || echo 0)" -lt 50 ]; then
+            tail -n 25000 "$NGINX_ACCESS_LOG" > "$TEMP_ACCESS" 2>/dev/null
+        fi
+    else
+        # Xây dựng regex cho chu kỳ nhiều ngày (7 ngày hoặc 30 ngày)
+        NGINX_DATE_REGEX=$(build_date_regex "$PERIOD" "%d/%b/%Y")
+        log_msg "⏳ Đang tổng hợp log Nginx trong $PERIOD ngày qua..."
+        {
+            cat "$NGINX_ACCESS_LOG" 2>/dev/null
+            [ -f "${NGINX_ACCESS_LOG}.1" ] && cat "${NGINX_ACCESS_LOG}.1" 2>/dev/null
+            find "$(dirname "$NGINX_ACCESS_LOG")" -name "$(basename "$NGINX_ACCESS_LOG").*.gz" -mtime -"$((PERIOD + 2))" -exec gzip -dc {} + 2>/dev/null
+        } | grep -E "$NGINX_DATE_REGEX" > "$TEMP_ACCESS" 2>/dev/null
     fi
 
-    # Thống kê mã trạng thái HTTP từ file tạm
     STATUS_COUNTS=$(grep -oE '" [1-5][0-9]{2} ' "$TEMP_ACCESS" 2>/dev/null | tr -d '" ' | sort | uniq -c)
 
     if [ -n "$STATUS_COUNTS" ]; then
@@ -219,49 +389,55 @@ if [ -f "$NGINX_ACCESS_LOG" ]; then
         TOTAL_REQ=$((COUNT_2XX + COUNT_3XX + COUNT_403 + COUNT_404 + COUNT_5XX))
     fi
 
-    # Top 5 đường dẫn bị lỗi 403 / 404 (Tương thích cả Nginx combined và WordOps/custom format)
+    # Top 5 đường dẫn bị quét nhiều nhất
     TOP_PATHS=$(grep -E '" (403|404) ' "$TEMP_ACCESS" 2>/dev/null | awk -F'"' '{print $2}' | awk '{print $2}' | grep -v '^$' | grep -v '^-$' | sort | uniq -c | sort -nr | head -n 5)
 
-    # Top 5 IP gửi nhiều request lỗi nhất (4xx & 5xx)
+    # Top 5 IP gây nhiều lỗi nhất
     TOP_OFFENDING_IPS=$(grep -E '" [45][0-9]{2} ' "$TEMP_ACCESS" 2>/dev/null | awk '{print $1}' | sort | uniq -c | sort -nr | head -n 5)
 fi
 
-# -------------------------- 8. PHÂN TÍCH NGINX ERROR LOG -----------------------
+# -------------------------- 10. PHÂN TÍCH NGINX ERROR LOG ----------------------
 CRITICAL_ERRORS=""
 if [ -f "$NGINX_ERROR_LOG" ]; then
-    TODAY_ERR=$(date +"%Y/%m/%d")
-    # Lọc các lỗi nghiêm trọng: PHP-FPM sập, Upstream timeout (504), Connection refused (502), Rate limit
-    CRITICAL_ERRORS=$(tail -n 3000 "$NGINX_ERROR_LOG" 2>/dev/null | grep "$TODAY_ERR" | grep -iE "(upstream timed out|Connection refused|FastCGI sent in stderr|limiting requests|directory index of .* is forbidden)" | tail -n 3)
+    if [ "$PERIOD" -eq 1 ]; then
+        ERR_DATE_REGEX=$(date +"%Y/%m/%d")
+    else
+        ERR_DATE_REGEX=$(build_date_regex "$PERIOD" "%Y/%m/%d")
+    fi
+    CRITICAL_ERRORS=$(tail -n 5000 "$NGINX_ERROR_LOG" 2>/dev/null | grep -E "$ERR_DATE_REGEX" | grep -iE "(upstream timed out|Connection refused|FastCGI sent in stderr|limiting requests|directory index of .* is forbidden)" | tail -n 3)
 fi
 
-# -------------------------- 9. PHÂN TÍCH SSH SECURITY --------------------------
-TODAY_SYSLOG=$(date +"%b %e")
+# -------------------------- 11. PHÂN TÍCH SSH SECURITY -------------------------
 COUNT_SSH_FAIL=0
 COUNT_SSH_ACCEPTED=0
 TOP_SSH_ATTACKERS=""
 RECENT_SSH_LOGINS=""
 
 if [ "$SSH_MODE" = "file" ] && [ -n "$AUTH_LOG" ] && [ -f "$AUTH_LOG" ]; then
-    tail -n 30000 "$AUTH_LOG" 2>/dev/null | grep "$TODAY_SYSLOG" > "$TEMP_SSH" 2>/dev/null
-    if [ "$(wc -l < "$TEMP_SSH" 2>/dev/null || echo 0)" -lt 10 ]; then
-        tail -n 5000 "$AUTH_LOG" > "$TEMP_SSH" 2>/dev/null
+    if [ "$PERIOD" -eq 1 ]; then
+        TODAY_SYSLOG=$(date +"%b %e")
+        tail -n 30000 "$AUTH_LOG" 2>/dev/null | grep "$TODAY_SYSLOG" > "$TEMP_SSH" 2>/dev/null
+        if [ "$(wc -l < "$TEMP_SSH" 2>/dev/null || echo 0)" -lt 10 ]; then
+            tail -n 5000 "$AUTH_LOG" > "$TEMP_SSH" 2>/dev/null
+        fi
+    else
+        SYSLOG_DATE_REGEX=$(build_date_regex "$PERIOD" "%b %e")
+        {
+            cat "$AUTH_LOG" 2>/dev/null
+            [ -f "${AUTH_LOG}.1" ] && cat "${AUTH_LOG}.1" 2>/dev/null
+            find "$(dirname "$AUTH_LOG")" -name "$(basename "$AUTH_LOG").*.gz" -mtime -"$((PERIOD + 2))" -exec gzip -dc {} + 2>/dev/null
+        } | grep -E "$SYSLOG_DATE_REGEX" > "$TEMP_SSH" 2>/dev/null
     fi
 elif [ "$SSH_MODE" = "journal" ] || command -v journalctl >/dev/null 2>&1; then
-    # Hỗ trợ Ubuntu 24.04+ / systemd-journald
-    journalctl -u ssh --since today --no-pager 2>/dev/null > "$TEMP_SSH"
+    journalctl -u ssh --since "${PERIOD} days ago" --no-pager 2>/dev/null > "$TEMP_SSH"
     if [ ! -s "$TEMP_SSH" ]; then
         journalctl -u ssh -n 5000 --no-pager 2>/dev/null > "$TEMP_SSH"
     fi
 fi
 
 if [ -s "$TEMP_SSH" ]; then
-    # Số lần SSH thất bại (Brute force)
     COUNT_SSH_FAIL=$(grep -E -c "(Failed password|authentication failure|Failed publickey)" "$TEMP_SSH" 2>/dev/null || echo 0)
-
-    # Top IP brute-force SSH nhiều nhất
     TOP_SSH_ATTACKERS=$(grep -E "(Failed password|authentication failure)" "$TEMP_SSH" 2>/dev/null | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | sort | uniq -c | sort -nr | head -n 3)
-
-    # Đăng nhập SSH thành công
     SSH_ACCEPTED_LINES=$(grep -E "Accepted (password|publickey)" "$TEMP_SSH" 2>/dev/null)
     if [ -n "$SSH_ACCEPTED_LINES" ]; then
         COUNT_SSH_ACCEPTED=$(echo "$SSH_ACCEPTED_LINES" | wc -l | tr -d ' ')
@@ -276,17 +452,18 @@ if [ -s "$TEMP_SSH" ]; then
     fi
 fi
 
-# -------------------------- 10. PHÂN TÍCH FAIL2BAN ----------------------------
+# -------------------------- 12. PHÂN TÍCH FAIL2BAN ----------------------------
 COUNT_BANNED=0
 RECENT_BANS=""
-TODAY_ISO=$(date +"%Y-%m-%d")
 
 if [ -f "$FAIL2BAN_LOG" ]; then
-    F2B_DATA=$(tail -n 5000 "$FAIL2BAN_LOG" 2>/dev/null | grep "$TODAY_ISO")
-    if [ -z "$F2B_DATA" ]; then
-        F2B_DATA=$(tail -n 1500 "$FAIL2BAN_LOG" 2>/dev/null)
+    if [ "$PERIOD" -eq 1 ]; then
+        F2B_DATE_REGEX=$(date +"%Y-%m-%d")
+    else
+        F2B_DATE_REGEX=$(build_date_regex "$PERIOD" "%Y-%m-%d")
     fi
 
+    F2B_DATA=$(tail -n 10000 "$FAIL2BAN_LOG" 2>/dev/null | grep -E "$F2B_DATE_REGEX")
     BANNED_LINES=$(echo "$F2B_DATA" | grep " Ban ")
     if [ -n "$BANNED_LINES" ]; then
         COUNT_BANNED=$(echo "$BANNED_LINES" | wc -l | tr -d ' ')
@@ -299,7 +476,7 @@ if [ -f "$FAIL2BAN_LOG" ]; then
     fi
 fi
 
-# -------------------------- 11. KHỞI TẠO BIỂU ĐỒ QUICKCHART -------------------
+# -------------------------- 13. KHỞI TẠO BIỂU ĐỒ QUICKCHART -------------------
 log_msg "📊 Đang khởi tạo biểu đồ qua QuickChart API..."
 
 CHART_SUCCESS=0
@@ -338,7 +515,7 @@ CHART_PAYLOAD=$(cat <<EOF
       "legend": { "display": false },
       "title": {
         "display": true,
-        "text": "BÁO CÁO BẢO MẬT VÀ LỖI HỆ THỐNG - $SITE_NAME",
+        "text": "BÁO CÁO AN NINH ($PERIOD_LABEL) - $SITE_NAME",
         "fontColor": "#f8fafc",
         "fontSize": 18,
         "padding": 16
@@ -368,7 +545,6 @@ CHART_PAYLOAD=$(cat <<EOF
 EOF
 )
 
-# Tải ảnh chart từ QuickChart
 curl -s --connect-timeout 8 --max-time 15 --compressed -X POST "https://quickchart.io/chart" \
     -H "Content-Type: application/json" \
     -d "$CHART_PAYLOAD" \
@@ -381,15 +557,13 @@ else
     log_msg "⚠️ Không thể kết nối tới QuickChart, chuyển sang chế độ báo cáo văn bản thuần."
 fi
 
-# -------------------------- 12. SOẠN TIN NHẮN BÁO CÁO -------------------------
-# Caption tóm tắt cho ảnh biểu đồ (< 1000 ký tự)
-# Lưu ý: Không dùng ký tự dấu chấm phẩy ; trong caption gửi qua curl -F
-SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH VÀ SỰ CỐ MÁY CHỦ</b>
+# -------------------------- 14. SOẠN TIN NHẮN BÁO CÁO -------------------------
+SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH VÀ SỰ CỐ MÁY CHỦ ($PERIOD_LABEL)</b>
 • <b>Server:</b> <code>$SITE_NAME</code>
 • <b>Thời gian:</b> <code>$REPORT_TIME</code>
 • <b>Tài nguyên:</b> RAM: <code>$RAM_INFO</code> | Disk: <code>$DISK_INFO</code> | CPU: <code>$CPU_LOAD</code>
 
-⚡ <b>Chỉ số giám sát (24h):</b>
+⚡ <b>Chỉ số giám sát ($PERIOD_TITLE_DESC):</b>
 • 🌐 Tổng HTTP Requests: <b>$TOTAL_REQ</b> (2xx: $COUNT_2XX | 3xx: $COUNT_3XX)
 • ⚠️ Lỗi máy chủ (5xx): <b>$COUNT_5XX</b>
 • 🚫 Bị chặn (403): <b>$COUNT_403</b>
@@ -397,7 +571,6 @@ SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH VÀ SỰ CỐ MÁY CHỦ</b>
 • 🚨 SSH đăng nhập thất bại: <b>$COUNT_SSH_FAIL</b>
 • 🛡️ Fail2ban chặn IP: <b>$COUNT_BANNED</b>"
 
-# Định dạng chi tiết các mục phân tích
 FORMATTED_PATHS=""
 if [ -n "$TOP_PATHS" ]; then
     FORMATTED_PATHS=$(echo "$TOP_PATHS" | while read -r count path; do
@@ -434,8 +607,7 @@ if [ -n "$TOP_SSH_ATTACKERS" ]; then
     done)
 fi
 
-# Tin nhắn chi tiết
-DETAILED_MESSAGE="📋 <b>CHI TIẾT PHÂN TÍCH AN NINH VÀ HỆ THỐNG</b>
+DETAILED_MESSAGE="📋 <b>CHI TIẾT PHÂN TÍCH AN NINH VÀ HỆ THỐNG ($PERIOD_LABEL)</b>
 • <b>Server:</b> <code>$SITE_NAME</code>
 
 🌐 <b>Top đường dẫn bị quét nhiều nhất (403/404):</b>
@@ -463,9 +635,15 @@ ${RECENT_SSH_LOGINS:-"• <i>Chưa có đăng nhập SSH mới</i>"}
 • Tổng số IP đã khóa: <b>$COUNT_BANNED</b>
 ${RECENT_BANS:-"• <i>Không có IP mới bị khóa</i>"}"
 
-# -------------------------- 13. DRY-RUN HOẶC GỬI TELEGRAM ---------------------
+if [ "$CLEANED_COUNT" -gt 0 ]; then
+    DETAILED_MESSAGE="${DETAILED_MESSAGE}
+
+🧹 <b>Bảo trì hệ thống:</b> Đã dọn dẹp $CLEANED_COUNT file log/backup cũ hơn $CLEAN_DAYS ngày."
+fi
+
+# -------------------------- 15. DRY-RUN HOẶC GỬI TELEGRAM ---------------------
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo -e "\n==================== [CHẾ ĐỘ KIỂM THỬ: DRY-RUN] ===================="
+    echo -e "\n==================== [CHẾ ĐỘ KIỂM THỬ: DRY-RUN ($PERIOD_LABEL)] ===================="
     echo "--- [1. TÓM TẮT BÁO CÁO (CAPTION)] ---"
     echo -e "$SUMMARY_CAPTION" | sed 's/<[^>]*>//g'
     echo -e "\n--- [2. CHI TIẾT PHÂN TÍCH] ---"
@@ -481,7 +659,6 @@ fi
 log_msg "📤 Đang gửi báo cáo về Telegram..."
 
 if [ "$CHART_SUCCESS" -eq 1 ]; then
-    # Gửi ảnh biểu đồ kèm tóm tắt
     PHOTO_RES=$(curl -s --connect-timeout 10 --max-time 25 -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendPhoto" \
         -F "chat_id=$CHAT_ID" \
         -F "photo=@$CHART_FILE" \
@@ -492,21 +669,18 @@ if [ "$CHART_SUCCESS" -eq 1 ]; then
         log_msg "✅ Gửi biểu đồ thành công!"
     else
         log_msg "❌ Lỗi gửi ảnh Telegram: $PHOTO_RES"
-        # Dự phòng: gửi caption dạng tin nhắn thường nếu gửi ảnh lỗi
         curl -s --connect-timeout 10 --max-time 25 -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
             --data-urlencode "chat_id=$CHAT_ID" \
             --data-urlencode "text=$SUMMARY_CAPTION" \
             --data-urlencode "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
     fi
 else
-    # Gửi tin nhắn tóm tắt text nếu không có biểu đồ
     curl -s --connect-timeout 10 --max-time 25 -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
         --data-urlencode "chat_id=$CHAT_ID" \
         --data-urlencode "text=$SUMMARY_CAPTION" \
         --data-urlencode "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
 fi
 
-# Gửi tin nhắn phân tích chi tiết (Top scan paths, Top IPs, SSH log)
 MSG_RES=$(curl -s --connect-timeout 10 --max-time 25 -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
     --data-urlencode "chat_id=$CHAT_ID" \
     --data-urlencode "text=$DETAILED_MESSAGE" \
@@ -518,5 +692,5 @@ else
     log_msg "❌ Lỗi gửi chi tiết Telegram: $MSG_RES"
 fi
 
-log_msg "🎉 Hoàn tất chu trình báo cáo an ninh cho $SITE_NAME!"
+log_msg "🎉 Hoàn tất chu trình báo cáo an ninh ($PERIOD_LABEL) cho $SITE_NAME!"
 exit 0
