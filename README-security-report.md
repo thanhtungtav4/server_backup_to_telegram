@@ -11,6 +11,8 @@ Script tự động phân tích log hệ thống (Nginx, SSH, Fail2ban), theo d�
 
 ## ✨ Điểm Nổi Bật
 
+- 📅 **Báo cáo đa chu kỳ (1 ngày, 7 ngày, 30 ngày):** Phân tích linh hoạt theo ngày (`--daily`), tuần (`--weekly`) hoặc tháng (`--monthly`) kèm biểu đồ thích ứng tự động.
+- 🧹 **Tự động dọn dẹp log rác sau 2 tháng (60 ngày):** Tự động dọn sạch log xoay vòng Nginx (`*.gz`, `*.1`), log hệ thống cũ và các file backup `.tar.gz` cũ hơn 60 ngày để chống tràn ổ đĩa VPS.
 - 📊 **Gửi biểu đồ trực quan (Chart Image):** Tự động tạo biểu đồ cột Dark Mode hiển thị số lượng lỗi 5xx, 403, 404, brute-force SSH và Fail2ban bans.
 - 🚀 **100% Bash thuần & Siêu nhẹ:** Chạy được trên **mọi Linux server / VPS** (Ubuntu, Debian, CentOS, AlmaLinux, WordOps, EasyEngine,...). **Không cần cài đặt Python, matplotlib hay Node.js đồ họa nặng nề**.
 - ⚙️ **Tự động nạp cấu hình:** Tự động tìm kiếm và nạp các biến môi trường từ `backup.env` (tương thích hoàn hảo với hệ thống `backup.sh`), không cần sửa code script.

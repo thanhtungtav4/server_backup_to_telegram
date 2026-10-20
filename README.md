@@ -75,15 +75,38 @@ A robust automation suite for WordPress & Linux server management:
 
 `security-report.sh` reads your Nginx access/error logs, SSH auth logs, Fail2ban bans, and VPS resource metrics, renders a clean dark-mode bar chart using **QuickChart API**, and sends it to Telegram.
 
-👉 **See detailed instructions & configuration in [README-security-report.md](README-security-report.md).**
+### Key Highlights ✨
+- 📈 **Multi-Period Reports:** Analyze security and traffic across **1 day (24h)**, **7 days (weekly)**, or **30 days (monthly)** with matching dynamic charts.
+- 🧹 **Automatic 60-Day Log & Backup Cleanup:** Auto-deletes rotated log files (`*.gz`, `*.1`) and old `.tar.gz` backups older than 2 months (60 days) to prevent disk space exhaustion.
+- 🛡️ **Forensic Insights:** Captures top scanned vulnerability paths (`/.env`, `xmlrpc.php`, `wp-login.php`), top offending IPs, SSH brute-force attempts, successful logins, and Nginx upstream crashes.
+- 🧪 **Dry-run Mode:** Test output directly in terminal without spamming Telegram (`--dry-run`).
+
+### Command Usage 📋
+
+| Command | Description |
+| :--- | :--- |
+| `./security-report.sh --daily` | Generate 24-hour report (default) and send to Telegram |
+| `./security-report.sh --weekly` | Generate 7-day weekly digest from active + rotated logs |
+| `./security-report.sh --monthly` | Generate 30-day monthly overview |
+| `./security-report.sh --dry-run` | Test & preview output on terminal without sending to Telegram |
+| `./security-report.sh --clean` | Run 60-day log & backup cleanup manually and exit |
+
+### Automation with Cron ⏰
+
+Add these entries to your crontab (`crontab -e`):
 
 ```bash
-# Run security reporter
-./security-report.sh "My Website" "/var/log/nginx/access.log"
+# Daily security & error report at 08:00 AM
+0 8 * * * /root/security-report.sh --daily >> /root/security_report.log 2>&1
 
-# Schedule daily digest at 08:00 AM via cron
-0 8 * * * /root/security-report.sh >> /root/security_report.log 2>&1
+# Weekly security digest every Monday at 08:30 AM
+30 8 * * 1 /root/security-report.sh --weekly >> /root/security_report.log 2>&1
+
+# Monthly overview on the 1st of every month at 09:00 AM
+0 9 1 * * /root/security-report.sh --monthly >> /root/security_report.log 2>&1
 ```
+
+👉 **See full documentation, preview screenshots & troubleshooting in [README-security-report.md](README-security-report.md).**
 
 ---
 
