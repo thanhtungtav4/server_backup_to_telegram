@@ -8,14 +8,28 @@
 # ==============================================================================
 
 # ---------------------------- CẤU HÌNH CƠ BẢN ---------------------------------
+# Tự động nạp file cấu hình nếu tồn tại (vd: backup.env)
+CONFIG_FILE="${CONFIG_FILE:-""}"
+if [ -z "$CONFIG_FILE" ]; then
+    for cfg in "/root/backup.env" "/root/.config/nhato/backup.env" "$(dirname "$0")/backup.env"; do
+        if [ -r "$cfg" ]; then
+            CONFIG_FILE="$cfg"
+            break
+        fi
+    done
+fi
+if [ -n "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
 # 1. Telegram Bot Token & Chat ID
 BOT_TOKEN="${BOT_TOKEN:-""}"
 CHAT_ID="${CHAT_ID:-""}"
 
 # Telegram API endpoint (Đổi sang Cloudflare Worker proxy nếu nhà mạng chặn Telegram)
-# Mặc định: https://api.telegram.org
-# Proxy ví dụ: https://send-telegram-api.thanhtung74119.workers.dev
-TELEGRAM_API="${TELEGRAM_API:-"https://api.telegram.org"}"
+# Mặc định: https://api.telegram.org (hoặc kế thừa TELEGRAM_API_BASE từ backup.env)
+TELEGRAM_API="${TELEGRAM_API:-${TELEGRAM_API_BASE:-"https://api.telegram.org"}}"
 
 # 2. Tên máy chủ / Website nhận diện
 SITE_NAME="${1:-${SITE_NAME:-"$(hostname)"}}"
@@ -23,7 +37,7 @@ SITE_NAME="${1:-${SITE_NAME:-"$(hostname)"}}"
 # 3. Đường dẫn các file log
 NGINX_ACCESS_LOG="${2:-${NGINX_ACCESS_LOG:-"/var/log/nginx/access.log"}}"
 NGINX_ERROR_LOG="${3:-${NGINX_ERROR_LOG:-"/var/log/nginx/error.log"}}"
-AUTH_LOG="${AUTH_LOG:-""}"          # Để trống sẽ tự động phát hiện (/var/log/auth.log hoặc /var/log/secure)
+AUTH_LOG="${AUTH_LOG:-""}"          # Để trống sẽ tự động phát hiện (/var/log/auth.log, /var/log/secure, hoặc journalctl)
 FAIL2BAN_LOG="${FAIL2BAN_LOG:-"/var/log/fail2ban.log"}"
 
 # File ghi log hoạt động của script
@@ -46,12 +60,17 @@ log_msg() {
     echo "[$timestamp] $1" | tee -a "$REPORT_LOG"
 }
 
+escape_html() {
+    printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+}
+
 # Kiểm tra cấu hình bắt buộc
 if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
     echo "❌ Lỗi: BOT_TOKEN hoặc CHAT_ID chưa được thiết lập!"
     echo "Cách dùng:"
     echo "  1. Mở file script và điền: BOT_TOKEN=\"...\" CHAT_ID=\"...\""
-    echo "  2. Hoặc chạy qua biến môi trường: BOT_TOKEN=\"...\" CHAT_ID=\"...\" $0 [SITE_NAME] [NGINX_ACCESS_LOG]"
+    echo "  2. Hoặc tạo file backup.env trong cùng thư mục / /root/backup.env"
+    echo "  3. Hoặc chạy qua biến môi trường: BOT_TOKEN=\"...\" CHAT_ID=\"...\" $0 [SITE_NAME] [NGINX_ACCESS_LOG]"
     exit 1
 fi
 
@@ -64,6 +83,14 @@ if [ ! -f "$NGINX_ACCESS_LOG" ]; then
         NGINX_ACCESS_LOG="/var/log/nginx/${SITE_NAME}.access.log"
     elif [ -f "/var/log/nginx/${SITE_NAME}_access.log" ]; then
         NGINX_ACCESS_LOG="/var/log/nginx/${SITE_NAME}_access.log"
+    fi
+fi
+
+if [ ! -f "$NGINX_ERROR_LOG" ]; then
+    if [ -f "/var/log/nginx/${SITE_NAME}.error.log" ]; then
+        NGINX_ERROR_LOG="/var/log/nginx/${SITE_NAME}.error.log"
+    elif [ -f "/var/log/nginx/${SITE_NAME}_error.log" ]; then
+        NGINX_ERROR_LOG="/var/log/nginx/${SITE_NAME}_error.log"
     fi
 fi
 
@@ -108,7 +135,7 @@ TOP_OFFENDING_IPS=""
 if [ -f "$NGINX_ACCESS_LOG" ]; then
     # Kiểm tra số dòng log hôm nay
     TODAY_MATCHES=$(grep "$TODAY_NGINX" "$NGINX_ACCESS_LOG" 2>/dev/null | wc -l | tr -d ' ')
-    
+
     if [ "$TODAY_MATCHES" -gt 50 ]; then
         LOG_STREAM="grep '$TODAY_NGINX' '$NGINX_ACCESS_LOG'"
     else
@@ -117,7 +144,7 @@ if [ -f "$NGINX_ACCESS_LOG" ]; then
 
     # Thống kê mã trạng thái HTTP
     STATUS_COUNTS=$(eval "$LOG_STREAM" 2>/dev/null | grep -oE '" [1-5][0-9]{2} ' | tr -d '" ' | sort | uniq -c)
-    
+
     if [ -n "$STATUS_COUNTS" ]; then
         COUNT_2XX=$(echo "$STATUS_COUNTS" | awk '$2 ~ /^2/ {sum += $1} END {print sum+0}')
         COUNT_3XX=$(echo "$STATUS_COUNTS" | awk '$2 ~ /^3/ {sum += $1} END {print sum+0}')
@@ -127,8 +154,8 @@ if [ -f "$NGINX_ACCESS_LOG" ]; then
         TOTAL_REQ=$((COUNT_2XX + COUNT_3XX + COUNT_403 + COUNT_404 + COUNT_5XX))
     fi
 
-    # Top 5 đường dẫn bị lỗi 403 / 404 (Dấu hiệu bị bot scan lỗ hổng .env, wp-login, xmlrpc,...)
-    TOP_PATHS=$(eval "$LOG_STREAM" 2>/dev/null | grep -E '" (403|404) ' | awk '{print $7}' | grep -v '^-$' | sort | uniq -c | sort -nr | head -n 5)
+    # Top 5 đường dẫn bị lỗi 403 / 404 (Tương thích cả Nginx combined và WordOps/custom log format)
+    TOP_PATHS=$(eval "$LOG_STREAM" 2>/dev/null | grep -E '" (403|404) ' | awk -F'"' '{print $2}' | awk '{print $2}' | grep -v '^$' | grep -v '^-$' | sort | uniq -c | sort -nr | head -n 5)
 
     # Top 5 IP gửi nhiều request lỗi nhất (4xx & 5xx)
     TOP_OFFENDING_IPS=$(eval "$LOG_STREAM" 2>/dev/null | grep -E '" [45][0-9]{2} ' | awk '{print $1}' | sort | uniq -c | sort -nr | head -n 5)
@@ -141,6 +168,7 @@ COUNT_SSH_ACCEPTED=0
 TOP_SSH_ATTACKERS=""
 RECENT_SSH_LOGINS=""
 
+SSH_DATA=""
 if [ -n "$AUTH_LOG" ] && [ -f "$AUTH_LOG" ]; then
     SSH_MATCHES=$(grep "$TODAY_SYSLOG" "$AUTH_LOG" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$SSH_MATCHES" -gt 10 ]; then
@@ -148,9 +176,16 @@ if [ -n "$AUTH_LOG" ] && [ -f "$AUTH_LOG" ]; then
     else
         SSH_STREAM="tail -n 5000 '$AUTH_LOG'"
     fi
-    
     SSH_DATA=$(eval "$SSH_STREAM" 2>/dev/null)
+elif command -v journalctl >/dev/null 2>&1; then
+    # Hỗ trợ Ubuntu 24.04+ / systemd-journald không có /var/log/auth.log
+    SSH_DATA=$(journalctl -u ssh --since today --no-pager 2>/dev/null)
+    if [ -z "$SSH_DATA" ]; then
+        SSH_DATA=$(journalctl -u ssh -n 5000 --no-pager 2>/dev/null)
+    fi
+fi
 
+if [ -n "$SSH_DATA" ]; then
     # Số lần SSH thất bại (Brute force)
     COUNT_SSH_FAIL=$(echo "$SSH_DATA" | grep -E "(Failed password|authentication failure|Failed publickey)" | wc -l | tr -d ' ')
 
@@ -237,7 +272,7 @@ CHART_PAYLOAD=$(cat <<EOF
       "legend": { "display": false },
       "title": {
         "display": true,
-        "text": "BÁO CÁO BẢO MẬT & LỖI HỆ THỐNG - $SITE_NAME",
+        "text": "BÁO CÁO BẢO MẬT VÀ LỖI HỆ THỐNG - $SITE_NAME",
         "fontColor": "#f8fafc",
         "fontSize": 18,
         "padding": 16
@@ -282,7 +317,8 @@ fi
 
 # ------------------------ 6. SOẠN TIN NHẮN BÁO CÁO ----------------------------
 # Caption tóm tắt cho ảnh biểu đồ (< 1000 ký tự)
-SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH & SỰ CỐ MÁY CHỦ</b>
+# Lưu ý: Không dùng ký tự dấu chấm phẩy ; trong caption gửi qua curl -F
+SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH VÀ SỰ CỐ MÁY CHỦ</b>
 • <b>Server:</b> <code>$SITE_NAME</code>
 • <b>Thời gian:</b> <code>$REPORT_TIME</code>
 • <b>Tài nguyên:</b> RAM: <code>$RAM_INFO</code> | Disk: <code>$DISK_INFO</code> | CPU: <code>$CPU_LOAD</code>
@@ -298,25 +334,34 @@ SUMMARY_CAPTION="📊 <b>BÁO CÁO AN NINH & SỰ CỐ MÁY CHỦ</b>
 # Định dạng chi tiết các mục phân tích
 FORMATTED_PATHS=""
 if [ -n "$TOP_PATHS" ]; then
-    FORMATTED_PATHS=$(echo "$TOP_PATHS" | awk '{printf "• <code>%s</code>: <b>%s</b> lần\n", $2, $1}')
+    FORMATTED_PATHS=$(echo "$TOP_PATHS" | while read -r count path; do
+        safe_path=$(escape_html "$path")
+        printf '• <code>%s</code>: <b>%s</b> lần\n' "$safe_path" "$count"
+    done)
 else
     FORMATTED_PATHS="• <i>Không phát hiện đường dẫn dò quét bất thường</i>"
 fi
 
 FORMATTED_IPS=""
 if [ -n "$TOP_OFFENDING_IPS" ]; then
-    FORMATTED_IPS=$(echo "$TOP_OFFENDING_IPS" | awk '{printf "• <code>%s</code>: <b>%s</b> lỗi\n", $2, $1}')
+    FORMATTED_IPS=$(echo "$TOP_OFFENDING_IPS" | while read -r count ip; do
+        safe_ip=$(escape_html "$ip")
+        printf '• <code>%s</code>: <b>%s</b> lỗi\n' "$safe_ip" "$count"
+    done)
 else
     FORMATTED_IPS="• <i>Không phát hiện IP spam lỗi bất thường</i>"
 fi
 
 FORMATTED_SSH_ATTACKERS=""
 if [ -n "$TOP_SSH_ATTACKERS" ]; then
-    FORMATTED_SSH_ATTACKERS=$(echo "$TOP_SSH_ATTACKERS" | awk '{printf "  ↳ <code>%s</code>: <b>%s</b> lần\n", $2, $1}')
+    FORMATTED_SSH_ATTACKERS=$(echo "$TOP_SSH_ATTACKERS" | while read -r count ip; do
+        safe_ip=$(escape_html "$ip")
+        printf '  ↳ <code>%s</code>: <b>%s</b> lần\n' "$safe_ip" "$count"
+    done)
 fi
 
 # Tin nhắn chi tiết
-DETAILED_MESSAGE="📋 <b>CHI TIẾT PHÂN TÍCH AN NINH & HỆ THỐNG</b>
+DETAILED_MESSAGE="📋 <b>CHI TIẾT PHÂN TÍCH AN NINH VÀ HỆ THỐNG</b>
 • <b>Server:</b> <code>$SITE_NAME</code>
 
 🌐 <b>Top đường dẫn bị quét nhiều nhất (403/404):</b>
@@ -352,23 +397,23 @@ if [ "$CHART_SUCCESS" -eq 1 ]; then
         log_msg "❌ Lỗi gửi ảnh Telegram: $PHOTO_RES"
         # Dự phòng: gửi caption dạng tin nhắn thường nếu gửi ảnh lỗi
         curl -s -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
-            -d "chat_id=$CHAT_ID" \
-            -d "text=$SUMMARY_CAPTION" \
-            -d "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
+            --data-urlencode "chat_id=$CHAT_ID" \
+            --data-urlencode "text=$SUMMARY_CAPTION" \
+            --data-urlencode "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
     fi
 else
     # Gửi tin nhắn tóm tắt text nếu không có biểu đồ
     curl -s -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
-        -d "chat_id=$CHAT_ID" \
-        -d "text=$SUMMARY_CAPTION" \
-        -d "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
+        --data-urlencode "chat_id=$CHAT_ID" \
+        --data-urlencode "text=$SUMMARY_CAPTION" \
+        --data-urlencode "parse_mode=HTML" >> "$REPORT_LOG" 2>&1
 fi
 
 # Gửi tin nhắn phân tích chi tiết (Top scan paths, Top IPs, SSH log)
 MSG_RES=$(curl -s -X POST "$TELEGRAM_API/bot$BOT_TOKEN/sendMessage" \
-    -d "chat_id=$CHAT_ID" \
-    -d "text=$DETAILED_MESSAGE" \
-    -d "parse_mode=HTML")
+    --data-urlencode "chat_id=$CHAT_ID" \
+    --data-urlencode "text=$DETAILED_MESSAGE" \
+    --data-urlencode "parse_mode=HTML")
 
 if echo "$MSG_RES" | grep -q '"ok":true'; then
     log_msg "✅ Gửi chi tiết báo cáo thành công!"

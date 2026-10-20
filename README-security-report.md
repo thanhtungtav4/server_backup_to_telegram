@@ -13,11 +13,14 @@ Script tự động phân tích log hệ thống (Nginx, SSH, Fail2ban), theo d�
 
 - 📊 **Gửi biểu đồ trực quan (Chart Image):** Tự động tạo biểu đồ cột Dark Mode hiển thị số lượng lỗi 5xx, 403, 404, brute-force SSH và Fail2ban bans.
 - 🚀 **100% Bash thuần & Siêu nhẹ:** Chạy được trên **mọi Linux server / VPS** (Ubuntu, Debian, CentOS, AlmaLinux, WordOps, EasyEngine,...). **Không cần cài đặt Python, matplotlib hay Node.js đồ họa nặng nề**.
+- ⚙️ **Tự động nạp cấu hình:** Tự động tìm kiếm và nạp các biến môi trường từ `backup.env` (tương thích hoàn hảo với hệ thống `backup.sh`), không cần sửa code script.
 - 🔍 **Phân tích Web Server (Nginx):**
   - Thống kê phân bố mã HTTP (2xx, 3xx, 403, 404, 5xx).
+  - Tương thích cả định dạng log Nginx Combined tiêu chuẩn lẫn cấu hình WordOps/EasyEngine.
   - Bắt các đợt quét lỗ hổng phổ biến (dò file `.env`, `wp-config.php`, `xmlrpc.php`, `phpmyadmin`, `setup.php`,...).
   - Top các địa chỉ IP gửi nhiều request lỗi/spam nhất.
 - 🔐 **Giám sát an ninh SSH:**
+  - Hỗ trợ cả file log truyền thống (`/var/log/auth.log`, `/var/log/secure`) lẫn `journalctl -u ssh` trên Ubuntu 24.04+ / systemd.
   - Đếm số lần brute-force thất bại & Top IP tấn công SSH.
   - Cảnh báo các phiên đăng nhập SSH thành công (kèm User, IP, thời gian).
 - 🛡️ **Tích hợp Fail2ban:** Đếm số IP bị ban trong ngày và hiển thị các jail vừa kích hoạt.
@@ -81,6 +84,17 @@ chmod +x security-report.sh
 ```
 
 ### 2. Cấu hình thông tin Telegram
+Bạn có thể cấu hình thông qua một trong các cách sau:
+
+**Cách 1: Sử dụng chung file `backup.env` (Khuyến nghị)**
+Script sẽ tự động tìm nạp các biến từ `backup.env` (ở cùng thư mục script hoặc `/root/backup.env`):
+```bash
+BOT_TOKEN="123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+CHAT_ID="123456789"
+SITE_NAME="mywebsite.com"
+```
+
+**Cách 2: Sửa trực tiếp trong file `security-report.sh`**
 Mở file `security-report.sh` bằng `nano` hoặc `vim`:
 ```bash
 nano security-report.sh
@@ -144,7 +158,7 @@ Nếu muốn theo dõi mỗi 6 tiếng một lần:
      TELEGRAM_API="https://send-telegram-api.thanhtung74119.workers.dev"
      ```
 2. **Không thấy thông tin SSH trong báo cáo:**
-   - Đảm bảo user chạy script (thường là `root`) có quyền đọc `/var/log/auth.log` (Ubuntu/Debian) hoặc `/var/log/secure` (CentOS).
+   - Script tự động phát hiện `/var/log/auth.log` (Ubuntu/Debian cũ), `/var/log/secure` (CentOS/RHEL) hoặc `journalctl -u ssh` (Ubuntu 24.04+). Hãy đảm bảo script chạy dưới quyền `root` (hoặc user có quyền đọc log hệ thống).
 3. **QuickChart không tạo được ảnh:**
    - Kiểm tra kết nối ra ngoài internet từ VPS: `curl -I https://quickchart.io`.
    - Nếu QuickChart không phản hồi, script sẽ **tự động chuyển sang chế độ văn bản thuần** nên không bao giờ làm gián đoạn thông báo.
